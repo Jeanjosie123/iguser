@@ -1,18 +1,17 @@
-IG 3L / 4L Username Finder
+IG Finder v3 — GitHub Actions edition
 
-FILES
-- main.py
-- requirements.txt
-- checked.txt
+WHY
+- You can close Safari/iPhone. GitHub Actions runs in GitHub's runner, not your Codespace.
+- Scheduled every 15 minutes at minutes 02/17/32/47.
+- You can also run it manually from Actions > IG Username Finder > Run workflow.
 
 SETUP
-1. Create a new Discord webhook. Do not reuse a webhook URL that has been publicly shared.
-2. Set an environment variable/secret named DISCORD_WEBHOOK.
-3. Install:
-   pip install -r requirements.txt
-4. Run:
-   python main.py
+1. Keep the repo PRIVATE.
+2. Repository > Settings > Secrets and variables > Actions > New repository secret.
+3. Name: DISCORD_WEBHOOK
+4. Value: your Discord webhook URL.
+5. Upload ALL files/folders from this ZIP to the repository root and commit.
+6. Open Actions and enable workflows if GitHub asks.
 
 IMPORTANT
-A 404 Instagram profile response is only treated as LIKELY AVAILABLE.
-It does not guarantee that Instagram will allow the username to be claimed.
+This checker only uses public web responses. A candidate is NOT a 100% guarantee that Instagram will permit claiming it.
