@@ -13,6 +13,7 @@ DISCORD_WEBHOOK = os.environ["DISCORD_WEBHOOK"]
 
 DOMSCAN_URL = "https://domscan.net/v1/social/bulk"
 
+# จำนวนชื่อต่อรอบ
 BATCH = 5
 
 # 10% = 3 ตัว / 90% = 4 ตัว
@@ -26,7 +27,7 @@ THREE_LETTER_RATIO = 0.10
 def generate_username():
     length = 3 if random.random() < THREE_LETTER_RATIO else 4
 
-    # ส่วนใหญ่เป็นตัวอักษร
+    # 75% ตัวอักษรล้วน
     if random.random() < 0.75:
         chars = string.ascii_lowercase
     else:
@@ -38,6 +39,7 @@ def generate_username():
             for _ in range(length)
         )
 
+        # ต้องมีตัวอักษรอย่างน้อย 1 ตัว
         if any(c.isalpha() for c in username):
             return username
 
@@ -52,23 +54,26 @@ def generate_batch(amount):
 
 
 # ==========================================
-# LAYER 1 — DOMSCAN
+# DOMSCAN
 # ==========================================
 
 def check_domscan(usernames):
     headers = {
         "Authorization": f"Bearer {DOMSCAN_API_KEY}",
+        "X-API-Key": DOMSCAN_API_KEY,
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
 
+    # ตรวจ Instagram อย่างเดียว
     payload = {
-        "handles": usernames
+        "handles": usernames,
+        "platforms": ["instagram"]
     }
 
     print()
     print("=" * 50)
-    print("LAYER 1: DOMSCAN")
+    print("DOMSCAN INSTAGRAM CHECK")
     print("=" * 50)
 
     for attempt in range(1, 3):
@@ -85,6 +90,7 @@ def check_domscan(usernames):
             print("DomScan HTTP:", response.status_code)
 
             response.raise_for_status()
+
             return response.json()
 
         except requests.exceptions.Timeout:
@@ -94,7 +100,7 @@ def check_domscan(usernames):
                 time.sleep(5)
 
         except requests.exceptions.RequestException as e:
-            print("DomScan error:", e)
+            print("DomScan request error:", e)
             return None
 
         except ValueError:
@@ -126,10 +132,14 @@ def extract_results(data):
     return []
 
 
-def get_domscan_available(data):
+# ==========================================
+# FILTER
+# ==========================================
+
+def find_candidates(data):
     results = extract_results(data)
 
-    passed = []
+    candidates = []
 
     print()
     print("DomScan results:", len(results))
@@ -151,169 +161,74 @@ def get_domscan_available(data):
         available = instagram.get("available")
         checked = instagram.get("checked")
         confidence = instagram.get("confidence")
+        method = instagram.get("method")
+        cached = instagram.get("cached")
 
         print(
             f"@{username} | "
             f"available={available} | "
             f"checked={checked} | "
-            f"confidence={confidence}"
+            f"confidence={confidence} | "
+            f"method={method} | "
+            f"cached={cached}"
         )
 
+        # รับเฉพาะ DomScan ที่ตรวจสำเร็จและบอกว่าว่าง
         if (
             username
             and checked is True
             and available is True
         ):
-            passed.append({
+            candidates.append({
                 "username": username,
-                "confidence": confidence or "unknown"
+                "confidence": confidence or "unknown",
+                "method": method or "unknown",
+                "cached": cached
             })
 
-    return passed
-
-
-# ==========================================
-# LAYER 2 — PUBLIC INSTAGRAM CHECK
-# ==========================================
-
-def check_instagram_public(username):
-    url = f"https://www.instagram.com/{username}/"
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-            "AppleWebKit/605.1.15 "
-            "Version/17.0 Mobile/15E148 Safari/604.1"
-        ),
-        "Accept": "text/html,application/xhtml+xml",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
-
-    try:
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=20,
-            allow_redirects=True
-        )
-
-        status = response.status_code
-        final_url = response.url.lower()
-
-        print(
-            f"Instagram @{username}: "
-            f"HTTP={status} final={final_url}"
-        )
-
-        # GitHub Actions มักถูก Instagram ส่งมาหน้า login
-        # อันนี้ไม่ได้บอกว่าชื่อถูกใช้
-        if (
-            "/accounts/login" in final_url
-            or "/challenge" in final_url
-        ):
-            return "INCONCLUSIVE", "login_redirect"
-
-        # พบหน้า profile
-        if status == 200:
-            return "TAKEN_OR_UNCERTAIN", "public_page_returned_200"
-
-        # ไม่พบ public profile
-        if status == 404:
-            return "NO_PUBLIC_PROFILE", "http_404"
-
-        if status == 429:
-            return "INCONCLUSIVE", "rate_limited"
-
-        return "INCONCLUSIVE", f"http_{status}"
-
-    except requests.exceptions.Timeout:
-        return "INCONCLUSIVE", "timeout"
-
-    except requests.exceptions.RequestException:
-        return "INCONCLUSIVE", "request_error"
-
-
-def run_second_layer(candidates):
-    results = []
-
-    print()
-    print("=" * 50)
-    print("LAYER 2: INSTAGRAM PUBLIC CHECK")
-    print("=" * 50)
-
-    for candidate in candidates:
-        username = candidate["username"]
-
-        status, reason = check_instagram_public(username)
-
-        candidate["instagram_status"] = status
-        candidate["instagram_reason"] = reason
-
-        print(
-            f"@{username} -> "
-            f"{status} ({reason})"
-        )
-
-        results.append(candidate)
-
-        time.sleep(2)
-
-    return results
+    return candidates
 
 
 # ==========================================
 # DISCORD
 # ==========================================
 
-def send_discord(results):
-    if not results:
+def send_discord(candidates):
+    if not candidates:
         print()
-        print("No DomScan available usernames.")
+        print("No available candidates.")
         print("Discord skipped.")
         return
 
     lines = []
 
-    for result in results:
-        username = result["username"]
-        confidence = result["confidence"]
-        ig_status = result["instagram_status"]
+    for item in candidates:
+        username = item["username"]
+        confidence = item["confidence"]
+        method = item["method"]
+        cached = item["cached"]
 
-        if ig_status == "NO_PUBLIC_PROFILE":
-            icon = "🟢"
-            check_text = "No public profile found"
-        elif ig_status == "INCONCLUSIVE":
-            icon = "🟡"
-            check_text = "Public check inconclusive"
-        else:
-            # DomScan บอกว่าว่าง แต่ public check ขัดแย้ง
-            # ไม่ส่งชื่อนี้
-            print(
-                f"Skipping @{username}: "
-                f"public check conflicts with DomScan"
-            )
-            continue
+        cache_text = (
+            "yes" if cached is True
+            else "no" if cached is False
+            else "unknown"
+        )
 
         lines.append(
-            f"{icon} **@{username}** · {len(username)}L\n"
+            f"🔎 **@{username}** · {len(username)}L\n"
             f"DomScan: AVAILABLE\n"
             f"Confidence: {confidence}\n"
-            f"Instagram check: {check_text}\n"
+            f"Method: {method}\n"
+            f"Cached: {cache_text}\n"
             f"<https://www.instagram.com/{username}/>"
         )
 
-    if not lines:
-        print()
-        print("Nothing safe enough to send.")
-        return
-
     message = (
-        "## IG USERNAME CANDIDATES\n\n"
+        "## 🔎 IG USERNAME CANDIDATES\n\n"
         + "\n\n".join(lines)
         + "\n\n"
-        + "🟢 = no public profile found\n"
-        + "🟡 = Instagram blocked/redirected the public check\n"
-        + "Availability is not a guarantee that Instagram will allow the username to be claimed."
+        + "ผ่าน DomScan: checked=true + available=true\n"
+        + "สถานะนี้เป็น candidate ไม่ใช่การยืนยันว่า Instagram จะอนุญาตให้ claim"
     )
 
     try:
@@ -356,27 +271,21 @@ def main():
     for username in usernames:
         print(" -", username)
 
-    domscan_data = check_domscan(usernames)
+    data = check_domscan(usernames)
 
-    if domscan_data is None:
+    if data is None:
         print("DomScan failed.")
         return
 
-    candidates = get_domscan_available(domscan_data)
+    candidates = find_candidates(data)
 
     print()
-    print("Passed DomScan:", len(candidates))
+    print("Available candidates:", len(candidates))
 
-    if not candidates:
-        print("Nothing passed DomScan.")
-        return
+    for item in candidates:
+        print("CANDIDATE:", item["username"])
 
-    results = run_second_layer(candidates)
-
-    print()
-    print("Candidates processed:", len(results))
-
-    send_discord(results)
+    send_discord(candidates)
 
     print()
     print("Done.")
