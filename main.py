@@ -4,31 +4,30 @@ import string
 import time
 import requests
 
-# =========================
+# ==========================================
 # CONFIG
-# =========================
+# ==========================================
 
 DOMSCAN_API_KEY = os.environ["DOMSCAN_API_KEY"]
 DISCORD_WEBHOOK = os.environ["DISCORD_WEBHOOK"]
 
 DOMSCAN_URL = "https://domscan.net/v1/social/bulk"
 
-# DomScan = 2 credits / username
-# เริ่มน้อยก่อนเพื่อไม่ให้ bulk timeout
+# DomScan คิด 2 credits / username
 BATCH = 5
 
-# สัดส่วน 3L / 4L
+# 70% เป็น 3L / 30% เป็น 4L
 THREE_LETTER_RATIO = 0.70
 
 
-# =========================
-# USERNAME GENERATOR
-# =========================
+# ==========================================
+# GENERATE USERNAMES
+# ==========================================
 
 def generate_username():
     length = 3 if random.random() < THREE_LETTER_RATIO else 4
 
-    # ส่วนใหญ่เป็นตัวอักษรล้วน
+    # 75% ตัวอักษรล้วน
     if random.random() < 0.75:
         chars = string.ascii_lowercase
     else:
@@ -54,9 +53,9 @@ def generate_batch(amount):
     return list(usernames)
 
 
-# =========================
-# DOMSCAN
-# =========================
+# ==========================================
+# LAYER 1 — DOMSCAN
+# ==========================================
 
 def check_domscan(usernames):
     headers = {
@@ -70,10 +69,10 @@ def check_domscan(usernames):
     }
 
     print()
-    print("Sending to DomScan...")
-    print("Handles:", usernames)
+    print("=" * 50)
+    print("LAYER 1: DOMSCAN")
+    print("=" * 50)
 
-    # ลองใหม่ได้ 2 ครั้ง ถ้า server ช้า
     for attempt in range(1, 3):
         try:
             print(f"DomScan attempt {attempt}/2")
@@ -89,57 +88,35 @@ def check_domscan(usernames):
 
             response.raise_for_status()
 
-            data = response.json()
-
-            print("DomScan response received.")
-
-            return data
+            return response.json()
 
         except requests.exceptions.Timeout:
             print("DomScan timeout.")
 
             if attempt < 2:
-                print("Waiting 5 seconds before retry...")
                 time.sleep(5)
 
-        except requests.exceptions.HTTPError as e:
-            print("DomScan HTTP error:", e)
-
-            try:
-                print("Response:", response.text[:1000])
-            except Exception:
-                pass
-
-            return None
-
         except requests.exceptions.RequestException as e:
-            print("DomScan connection error:", e)
+            print("DomScan request failed:", e)
             return None
 
         except ValueError:
             print("DomScan returned invalid JSON.")
             return None
 
-    print("DomScan did not respond after retries.")
     return None
 
-
-# =========================
-# PARSE BULK RESPONSE
-# =========================
 
 def extract_results(data):
     if data is None:
         return []
 
-    # API อาจคืน list โดยตรง
     if isinstance(data, list):
         return data
 
     if not isinstance(data, dict):
         return []
 
-    # รองรับชื่อ field ที่ bulk API อาจใช้
     for key in (
         "results",
         "items",
@@ -151,20 +128,19 @@ def extract_results(data):
         if isinstance(value, list):
             return value
 
-    # เผื่อ API คืน single result
     if "handle" in data and "availability" in data:
         return [data]
 
     return []
 
 
-def find_available(data):
+def get_domscan_available(data):
     results = extract_results(data)
 
-    print()
-    print("Results returned:", len(results))
+    passed = []
 
-    available_usernames = []
+    print()
+    print("DomScan results:", len(results))
 
     for item in results:
         if not isinstance(item, dict):
@@ -172,12 +148,10 @@ def find_available(data):
 
         username = item.get("handle")
 
-        availability = item.get("availability", {})
-
-        if not isinstance(availability, dict):
-            continue
-
-        instagram = availability.get("instagram", {})
+        instagram = (
+            item.get("availability", {})
+            .get("instagram", {})
+        )
 
         if not isinstance(instagram, dict):
             continue
@@ -185,44 +159,132 @@ def find_available(data):
         available = instagram.get("available")
         checked = instagram.get("checked")
         confidence = instagram.get("confidence")
-        cached = instagram.get("cached")
-        method = instagram.get("method")
 
         print(
             f"@{username} | "
             f"available={available} | "
             f"checked={checked} | "
-            f"confidence={confidence} | "
-            f"cached={cached} | "
-            f"method={method}"
+            f"confidence={confidence}"
         )
 
-        # ส่งเฉพาะชื่อที่ DomScan ระบุว่า
-        # ตรวจแล้ว + available จริง
         if (
             username
             and checked is True
             and available is True
         ):
-            available_usernames.append({
+            passed.append({
                 "username": username,
-                "confidence": confidence,
-                "cached": cached,
-                "method": method,
+                "confidence": confidence
             })
 
-    return available_usernames
+    return passed
 
 
-# =========================
+# ==========================================
+# LAYER 2 — INSTAGRAM PUBLIC PROFILE
+# ==========================================
+
+def verify_instagram(username):
+    url = f"https://www.instagram.com/{username}/"
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 "
+            "Version/17.0 Mobile/15E148 Safari/604.1"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,"
+            "application/xml;q=0.9,*/*;q=0.8"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    try:
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=20,
+            allow_redirects=True
+        )
+
+        status = response.status_code
+        final_url = response.url.lower()
+
+        print(
+            f"Instagram @{username}: "
+            f"HTTP={status} "
+            f"final={final_url}"
+        )
+
+        # โปรไฟล์มีอยู่
+        if status == 200:
+            return False, "profile_exists_or_uncertain"
+
+        # ไม่มี public profile ที่ URL นี้
+        if status == 404:
+            return True, "public_profile_not_found"
+
+        # Instagram จำกัด request
+        if status == 429:
+            return False, "rate_limited"
+
+        # ถ้าโดนพาไป login/challenge
+        # เราไม่ถือว่าผ่าน
+        if (
+            "/accounts/login" in final_url
+            or "/challenge" in final_url
+        ):
+            return False, "instagram_blocked_check"
+
+        # response อื่น ๆ = ไม่ชัดเจน
+        return False, f"uncertain_http_{status}"
+
+    except requests.exceptions.Timeout:
+        return False, "timeout"
+
+    except requests.exceptions.RequestException:
+        return False, "request_error"
+
+
+def second_layer_check(candidates):
+    verified = []
+
+    print()
+    print("=" * 50)
+    print("LAYER 2: INSTAGRAM")
+    print("=" * 50)
+
+    for candidate in candidates:
+        username = candidate["username"]
+
+        passed, reason = verify_instagram(username)
+
+        print(
+            f"@{username} -> "
+            f"{'PASS' if passed else 'REJECT'} "
+            f"({reason})"
+        )
+
+        if passed:
+            candidate["verification"] = reason
+            verified.append(candidate)
+
+        # ไม่ยิงติดกัน
+        time.sleep(2)
+
+    return verified
+
+
+# ==========================================
 # DISCORD
-# =========================
+# ==========================================
 
 def send_discord(results):
     if not results:
         print()
-        print("No available Instagram usernames found.")
-        print("Nothing will be sent to Discord.")
+        print("No username passed both checks.")
+        print("Discord notification skipped.")
         return
 
     lines = []
@@ -234,15 +296,16 @@ def send_discord(results):
         lines.append(
             f"✅ **@{username}** · {len(username)}L\n"
             f"DomScan: AVAILABLE\n"
-            f"Confidence: {confidence}\n"
+            f"DomScan confidence: {confidence}\n"
+            f"Instagram public profile: NOT FOUND\n"
             f"<https://www.instagram.com/{username}/>"
         )
 
     message = (
-        "## ✅ AVAILABLE IG USERNAMES\n\n"
+        "## ✅ DOUBLE-CHECKED IG USERNAMES\n\n"
         + "\n\n".join(lines)
         + "\n\n"
-        + "ตรวจโดย DomScan ก่อนส่งข้อความนี้"
+        + "Passed DomScan + Instagram public-profile check."
     )
 
     try:
@@ -265,44 +328,72 @@ def send_discord(results):
         print("Discord notification sent.")
 
     except requests.exceptions.RequestException as e:
-        # Discord มีปัญหาไม่ควรทำให้ตัวค้นหาทั้งรอบพัง
-        print("Discord send failed:", e)
+        print("Discord error:", e)
 
 
-# =========================
+# ==========================================
 # MAIN
-# =========================
+# ==========================================
 
 def main():
-    print("=" * 45)
-    print("IG USERNAME FINDER")
-    print("=" * 45)
+    print("=" * 50)
+    print("IG USERNAME FINDER — DOUBLE CHECK")
+    print("=" * 50)
 
     usernames = generate_batch(BATCH)
 
     print()
-    print(f"Generated {len(usernames)} usernames:")
+    print("Generated usernames:")
 
     for username in usernames:
         print(" -", username)
 
-    data = check_domscan(usernames)
+    # --------------------------
+    # CHECK 1
+    # --------------------------
 
-    if data is None:
-        print()
-        print("DomScan check failed.")
-        print("Ending this round without Discord notification.")
+    domscan_data = check_domscan(usernames)
+
+    if domscan_data is None:
+        print("DomScan failed.")
+        print("Ending round.")
         return
 
-    available = find_available(data)
+    candidates = get_domscan_available(domscan_data)
 
     print()
-    print("Available found:", len(available))
+    print(
+        "Passed DomScan:",
+        len(candidates)
+    )
 
-    for result in available:
-        print("AVAILABLE:", result["username"])
+    if not candidates:
+        print("Nothing passed DomScan.")
+        return
 
-    send_discord(available)
+    # --------------------------
+    # CHECK 2
+    # --------------------------
+
+    verified = second_layer_check(candidates)
+
+    print()
+    print(
+        "Passed BOTH checks:",
+        len(verified)
+    )
+
+    for item in verified:
+        print(
+            "DOUBLE CHECK PASSED:",
+            item["username"]
+        )
+
+    # --------------------------
+    # DISCORD
+    # --------------------------
+
+    send_discord(verified)
 
     print()
     print("Done.")
