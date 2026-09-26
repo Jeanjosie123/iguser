@@ -2,20 +2,10 @@ name: IG Username Finder
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "2,17,32,47 * * * *"
-
-permissions:
-  contents: read
 
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    env:
-      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-      BATCH: "20"
 
     steps:
       - name: Download repository
@@ -30,4 +20,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run finder
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          BATCH: "20"
         run: python main.py
