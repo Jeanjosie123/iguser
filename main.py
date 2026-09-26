@@ -1,92 +1,67 @@
-import os, random, string, time, requests
+import os
+import random
+import string
+import requests
 
-WEBHOOK = os.environ.get("DISCORD_WEBHOOK", "")
-BATCH = int(os.environ.get("BATCH", "20"))
-CHECKED_FILE = "checked.txt"
-CHARS = string.ascii_lowercase + string.digits
+WEBHOOK = os.environ["DISCORD_WEBHOOK"]
 
-s = requests.Session()
-s.headers.update({
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1",
-    "Accept": "text/html,application/xhtml+xml",
-    "Accept-Language": "en-US,en;q=0.9",
-})
+# เน้น 3L ก่อน เพราะหายากกว่า
+THREE_RATIO = 0.75
 
-def send(msg):
-    if not WEBHOOK:
-        return False
-    try:
-        return requests.post(WEBHOOK, json={"content": msg}, timeout=15).status_code in (200, 204)
-    except requests.RequestException:
-        return False
+# ตัวอักษรที่อ่านง่าย
+LETTERS = string.ascii_lowercase
+DIGITS = string.digits
 
-def load_checked():
-    try:
-        with open(CHECKED_FILE, encoding="utf-8") as f:
-            return {x.strip() for x in f if x.strip()}
-    except FileNotFoundError:
-        return set()
+def generate():
+    length = 3 if random.random() < THREE_RATIO else 4
 
-def save_checked(names):
-    with open(CHECKED_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(sorted(names)) + ("\n" if names else ""))
+    # สุ่มหลายรูปแบบ
+    mode = random.choice(["letters", "letters", "mixed"])
 
-def generate(checked):
-    while True:
-        n = random.choice((3, 4))
-        u = "".join(random.choice(CHARS) for _ in range(n))
-        if u not in checked:
-            return u
+    if mode == "letters":
+        return "".join(random.choice(LETTERS) for _ in range(length))
 
-def check(u):
-    # Follow redirects so a normal Instagram redirect is not automatically
-    # treated as availability. This remains a public-profile signal only.
-    try:
-        r = s.get(f"https://www.instagram.com/{u}/", timeout=20, allow_redirects=True)
-    except requests.RequestException as e:
-        return "ERROR", type(e).__name__
+    chars = LETTERS + DIGITS
+    name = "".join(random.choice(chars) for _ in range(length))
 
-    if r.status_code == 404:
-        return "CANDIDATE", "final HTTP 404"
-    if r.status_code == 429:
-        return "RATE_LIMIT", "HTTP 429"
-    if r.status_code == 200:
-        final = r.url.rstrip("/")
-        # If Instagram lands on login/challenge/home rather than the requested
-        # profile, the public request is inconclusive.
-        if any(x in final for x in ("/accounts/login", "/challenge")):
-            return "UNKNOWN", "Instagram login/challenge redirect"
-        return "TAKEN_OR_UNKNOWN", "final HTTP 200"
-    return "UNKNOWN", f"final HTTP {r.status_code}"
+    # ต้องมีตัวอักษรอย่างน้อย 1 ตัว
+    if not any(c.isalpha() for c in name):
+        return generate()
+
+    return name
+
+
+def send_discord(username):
+    profile = f"https://www.instagram.com/{username}/"
+
+    data = {
+        "content": (
+            "🔎 **NEW IG CANDIDATE**\n\n"
+            f"**@{username}**\n"
+            f"Length: `{len(username)}`\n"
+            f"Profile: <{profile}>\n\n"
+            "⚠️ Candidate only — confirm availability inside Instagram."
+        )
+    }
+
+    r = requests.post(WEBHOOK, json=data, timeout=15)
+    r.raise_for_status()
+
 
 def main():
-    checked = load_checked()
-    candidates = 0
-    print(f"Starting batch of {BATCH}")
+    amount = int(os.getenv("BATCH", "20"))
 
-    for i in range(BATCH):
-        u = generate(checked)
-        checked.add(u)
-        status, detail = check(u)
-        print(f"[{i+1}/{BATCH}] @{u} -> {status} ({detail})", flush=True)
+    generated = set()
 
-        if status == "CANDIDATE":
-            candidates += 1
-            send(
-                "🔎 **IG Username Candidate**\n"
-                f"Username: `{u}`\n"
-                f"https://www.instagram.com/{u}/\n"
-                f"Signal: `{detail}`\n"
-                "⚠️ Public-profile candidate only; confirm inside Instagram before claiming."
-            )
-        elif status == "RATE_LIMIT":
-            print("Rate limited; ending this batch.", flush=True)
-            break
+    while len(generated) < amount:
+        generated.add(generate())
 
-        time.sleep(random.uniform(8, 14))
+    print(f"Generated {len(generated)} candidates")
 
-    save_checked(checked)
-    print(f"Done. Candidates this batch: {candidates}")
+    for username in sorted(generated):
+        print("CANDIDATE:", username)
+        send_discord(username)
+
 
 if __name__ == "__main__":
     main()
