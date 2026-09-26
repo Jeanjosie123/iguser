@@ -13,21 +13,20 @@ DISCORD_WEBHOOK = os.environ["DISCORD_WEBHOOK"]
 
 DOMSCAN_URL = "https://domscan.net/v1/social/bulk"
 
-# DomScan คิด 2 credits / username
 BATCH = 5
 
-# 70% เป็น 3L / 30% เป็น 4L
+# 10% = 3 ตัว / 90% = 4 ตัว
 THREE_LETTER_RATIO = 0.10
 
 
 # ==========================================
-# GENERATE USERNAMES
+# GENERATOR
 # ==========================================
 
 def generate_username():
     length = 3 if random.random() < THREE_LETTER_RATIO else 4
 
-    # 75% ตัวอักษรล้วน
+    # ส่วนใหญ่เป็นตัวอักษร
     if random.random() < 0.75:
         chars = string.ascii_lowercase
     else:
@@ -39,7 +38,6 @@ def generate_username():
             for _ in range(length)
         )
 
-        # ต้องมีตัวอักษรอย่างน้อย 1 ตัว
         if any(c.isalpha() for c in username):
             return username
 
@@ -87,21 +85,20 @@ def check_domscan(usernames):
             print("DomScan HTTP:", response.status_code)
 
             response.raise_for_status()
-
             return response.json()
 
         except requests.exceptions.Timeout:
-            print("DomScan timeout.")
+            print("DomScan timeout")
 
             if attempt < 2:
                 time.sleep(5)
 
         except requests.exceptions.RequestException as e:
-            print("DomScan request failed:", e)
+            print("DomScan error:", e)
             return None
 
         except ValueError:
-            print("DomScan returned invalid JSON.")
+            print("DomScan returned invalid JSON")
             return None
 
     return None
@@ -117,12 +114,7 @@ def extract_results(data):
     if not isinstance(data, dict):
         return []
 
-    for key in (
-        "results",
-        "items",
-        "data",
-        "handles",
-    ):
+    for key in ("results", "items", "data", "handles"):
         value = data.get(key)
 
         if isinstance(value, list):
@@ -174,17 +166,17 @@ def get_domscan_available(data):
         ):
             passed.append({
                 "username": username,
-                "confidence": confidence
+                "confidence": confidence or "unknown"
             })
 
     return passed
 
 
 # ==========================================
-# LAYER 2 — INSTAGRAM PUBLIC PROFILE
+# LAYER 2 — PUBLIC INSTAGRAM CHECK
 # ==========================================
 
-def verify_instagram(username):
+def check_instagram_public(username):
     url = f"https://www.instagram.com/{username}/"
 
     headers = {
@@ -193,10 +185,7 @@ def verify_instagram(username):
             "AppleWebKit/605.1.15 "
             "Version/17.0 Mobile/15E148 Safari/604.1"
         ),
-        "Accept": (
-            "text/html,application/xhtml+xml,"
-            "application/xml;q=0.9,*/*;q=0.8"
-        ),
+        "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "en-US,en;q=0.9",
     }
 
@@ -213,67 +202,63 @@ def verify_instagram(username):
 
         print(
             f"Instagram @{username}: "
-            f"HTTP={status} "
-            f"final={final_url}"
+            f"HTTP={status} final={final_url}"
         )
 
-        # โปรไฟล์มีอยู่
-        if status == 200:
-            return False, "profile_exists_or_uncertain"
-
-        # ไม่มี public profile ที่ URL นี้
-        if status == 404:
-            return True, "public_profile_not_found"
-
-        # Instagram จำกัด request
-        if status == 429:
-            return False, "rate_limited"
-
-        # ถ้าโดนพาไป login/challenge
-        # เราไม่ถือว่าผ่าน
+        # GitHub Actions มักถูก Instagram ส่งมาหน้า login
+        # อันนี้ไม่ได้บอกว่าชื่อถูกใช้
         if (
             "/accounts/login" in final_url
             or "/challenge" in final_url
         ):
-            return False, "instagram_blocked_check"
+            return "INCONCLUSIVE", "login_redirect"
 
-        # response อื่น ๆ = ไม่ชัดเจน
-        return False, f"uncertain_http_{status}"
+        # พบหน้า profile
+        if status == 200:
+            return "TAKEN_OR_UNCERTAIN", "public_page_returned_200"
+
+        # ไม่พบ public profile
+        if status == 404:
+            return "NO_PUBLIC_PROFILE", "http_404"
+
+        if status == 429:
+            return "INCONCLUSIVE", "rate_limited"
+
+        return "INCONCLUSIVE", f"http_{status}"
 
     except requests.exceptions.Timeout:
-        return False, "timeout"
+        return "INCONCLUSIVE", "timeout"
 
     except requests.exceptions.RequestException:
-        return False, "request_error"
+        return "INCONCLUSIVE", "request_error"
 
 
-def second_layer_check(candidates):
-    verified = []
+def run_second_layer(candidates):
+    results = []
 
     print()
     print("=" * 50)
-    print("LAYER 2: INSTAGRAM")
+    print("LAYER 2: INSTAGRAM PUBLIC CHECK")
     print("=" * 50)
 
     for candidate in candidates:
         username = candidate["username"]
 
-        passed, reason = verify_instagram(username)
+        status, reason = check_instagram_public(username)
+
+        candidate["instagram_status"] = status
+        candidate["instagram_reason"] = reason
 
         print(
             f"@{username} -> "
-            f"{'PASS' if passed else 'REJECT'} "
-            f"({reason})"
+            f"{status} ({reason})"
         )
 
-        if passed:
-            candidate["verification"] = reason
-            verified.append(candidate)
+        results.append(candidate)
 
-        # ไม่ยิงติดกัน
         time.sleep(2)
 
-    return verified
+    return results
 
 
 # ==========================================
@@ -283,29 +268,52 @@ def second_layer_check(candidates):
 def send_discord(results):
     if not results:
         print()
-        print("No username passed both checks.")
-        print("Discord notification skipped.")
+        print("No DomScan available usernames.")
+        print("Discord skipped.")
         return
 
     lines = []
 
     for result in results:
         username = result["username"]
-        confidence = result.get("confidence") or "unknown"
+        confidence = result["confidence"]
+        ig_status = result["instagram_status"]
+
+        if ig_status == "NO_PUBLIC_PROFILE":
+            icon = "🟢"
+            check_text = "No public profile found"
+        elif ig_status == "INCONCLUSIVE":
+            icon = "🟡"
+            check_text = "Public check inconclusive"
+        else:
+            # DomScan บอกว่าว่าง แต่ public check ขัดแย้ง
+            # ไม่ส่งชื่อนี้
+            print(
+                f"Skipping @{username}: "
+                f"public check conflicts with DomScan"
+            )
+            continue
 
         lines.append(
-            f"✅ **@{username}** · {len(username)}L\n"
+            f"{icon} **@{username}** · {len(username)}L\n"
             f"DomScan: AVAILABLE\n"
-            f"DomScan confidence: {confidence}\n"
-            f"Instagram public profile: NOT FOUND\n"
+            f"Confidence: {confidence}\n"
+            f"Instagram check: {check_text}\n"
             f"<https://www.instagram.com/{username}/>"
         )
 
+    if not lines:
+        print()
+        print("Nothing safe enough to send.")
+        return
+
     message = (
-        "## ✅ DOUBLE-CHECKED IG USERNAMES\n\n"
+        "## IG USERNAME CANDIDATES\n\n"
         + "\n\n".join(lines)
         + "\n\n"
-        + "Passed DomScan + Instagram public-profile check."
+        + "🟢 = no public profile found\n"
+        + "🟡 = Instagram blocked/redirected the public check\n"
+        + "Availability is not a guarantee that Instagram will allow the username to be claimed."
     )
 
     try:
@@ -325,7 +333,7 @@ def send_discord(results):
 
         response.raise_for_status()
 
-        print("Discord notification sent.")
+        print("Discord sent.")
 
     except requests.exceptions.RequestException as e:
         print("Discord error:", e)
@@ -337,7 +345,7 @@ def send_discord(results):
 
 def main():
     print("=" * 50)
-    print("IG USERNAME FINDER — DOUBLE CHECK")
+    print("IG USERNAME FINDER")
     print("=" * 50)
 
     usernames = generate_batch(BATCH)
@@ -348,52 +356,27 @@ def main():
     for username in usernames:
         print(" -", username)
 
-    # --------------------------
-    # CHECK 1
-    # --------------------------
-
     domscan_data = check_domscan(usernames)
 
     if domscan_data is None:
         print("DomScan failed.")
-        print("Ending round.")
         return
 
     candidates = get_domscan_available(domscan_data)
 
     print()
-    print(
-        "Passed DomScan:",
-        len(candidates)
-    )
+    print("Passed DomScan:", len(candidates))
 
     if not candidates:
         print("Nothing passed DomScan.")
         return
 
-    # --------------------------
-    # CHECK 2
-    # --------------------------
-
-    verified = second_layer_check(candidates)
+    results = run_second_layer(candidates)
 
     print()
-    print(
-        "Passed BOTH checks:",
-        len(verified)
-    )
+    print("Candidates processed:", len(results))
 
-    for item in verified:
-        print(
-            "DOUBLE CHECK PASSED:",
-            item["username"]
-        )
-
-    # --------------------------
-    # DISCORD
-    # --------------------------
-
-    send_discord(verified)
+    send_discord(results)
 
     print()
     print("Done.")
