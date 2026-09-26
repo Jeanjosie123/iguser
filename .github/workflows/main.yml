@@ -26,5 +26,5 @@ jobs:
       - name: Run IG Finder
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          BATCH: "20"
+          DOMSCAN_API_KEY: ${{ secrets.DOMSCAN_API_KEY }}
         run: python main.py
