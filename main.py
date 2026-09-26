@@ -17,7 +17,7 @@ DOMSCAN_URL = "https://domscan.net/v1/social/bulk"
 BATCH = 5
 
 # 70% เป็น 3L / 30% เป็น 4L
-THREE_LETTER_RATIO = 0.70
+THREE_LETTER_RATIO = 0.10
 
 
 # ==========================================
