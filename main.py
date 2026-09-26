@@ -5,47 +5,56 @@ import requests
 
 WEBHOOK = os.environ["DISCORD_WEBHOOK"]
 
-# เน้น 3L ก่อน เพราะหายากกว่า
-THREE_RATIO = 0.75
-
-# ตัวอักษรที่อ่านง่าย
 LETTERS = string.ascii_lowercase
 DIGITS = string.digits
 
+
 def generate():
-    length = 3 if random.random() < THREE_RATIO else 4
+    # 75% เป็น 3 ตัว / 25% เป็น 4 ตัว
+    length = 3 if random.random() < 0.75 else 4
 
-    # สุ่มหลายรูปแบบ
-    mode = random.choice(["letters", "letters", "mixed"])
-
-    if mode == "letters":
+    # เน้นตัวอักษรล้วน แต่มีแบบผสมเลขบ้าง
+    if random.random() < 0.70:
         return "".join(random.choice(LETTERS) for _ in range(length))
 
     chars = LETTERS + DIGITS
     name = "".join(random.choice(chars) for _ in range(length))
 
-    # ต้องมีตัวอักษรอย่างน้อย 1 ตัว
+    # ต้องมีตัวอักษรอย่างน้อยหนึ่งตัว
     if not any(c.isalpha() for c in name):
         return generate()
 
     return name
 
 
-def send_discord(username):
-    profile = f"https://www.instagram.com/{username}/"
+def send_discord(usernames):
+    lines = []
 
-    data = {
-        "content": (
-            "🔎 **NEW IG CANDIDATE**\n\n"
-            f"**@{username}**\n"
-            f"Length: `{len(username)}`\n"
-            f"Profile: <{profile}>\n\n"
-            "⚠️ Candidate only — confirm availability inside Instagram."
+    for username in usernames:
+        profile = f"https://www.instagram.com/{username}/"
+        lines.append(
+            f"🔎 **@{username}** · {len(username)}L\n"
+            f"<{profile}>"
         )
-    }
 
-    r = requests.post(WEBHOOK, json=data, timeout=15)
-    r.raise_for_status()
+    message = (
+        "## IG USERNAME CANDIDATES\n"
+        f"Generated `{len(usernames)}` names\n\n"
+        + "\n\n".join(lines)
+        + "\n\n⚠️ Candidate list — verify availability inside Instagram."
+    )
+
+    r = requests.post(
+        WEBHOOK,
+        json={"content": message},
+        timeout=20
+    )
+
+    print("Discord status:", r.status_code)
+
+    if r.status_code not in (200, 204):
+        print("Discord response:", r.text)
+        r.raise_for_status()
 
 
 def main():
@@ -56,11 +65,17 @@ def main():
     while len(generated) < amount:
         generated.add(generate())
 
-    print(f"Generated {len(generated)} candidates")
+    usernames = sorted(generated)
 
-    for username in sorted(generated):
+    print(f"Generated {len(usernames)} candidates")
+
+    for username in usernames:
         print("CANDIDATE:", username)
-        send_discord(username)
+
+    # ส่ง Discord แค่ครั้งเดียวต่อรอบ
+    send_discord(usernames)
+
+    print("Done.")
 
 
 if __name__ == "__main__":
